@@ -94,6 +94,9 @@
 #include "internal.h"
 #include "fd.h"
 
+// Added by Yuqiong
+#include <linux/difc_module.h>
+#include <linux/rculist.h>
 /* NOTE:
  *	Implementing inode permission operations in /proc is almost
  *	certainly an error.  Permission checks need to happen during
@@ -2645,6 +2648,181 @@ static int proc_projid_map_open(struct inode *inode, struct file *file)
 	return proc_id_map_open(inode, file, &proc_projid_seq_operations);
 }
 
+/*
+* Yuqiong
+*/
+static int proc_show_labels(struct seq_file *m, struct pid_namespace *ns,
+				struct pid *pid, struct task_struct *task) {
+	struct tag *t;
+	struct task_difc *tsp;
+
+	tsp = task->cred->security;
+	if (tsp == NULL)
+		return -EINVAL;
+
+	/*
+	* TODO: 
+	* an access check that label file can only be 
+	* viewed by the process itself
+	* For debugging purpose, allow other process to view 
+	* this process's labels
+	*/
+
+	seq_printf(m, "Secrecy label: ");
+	list_for_each_entry_rcu(t, &tsp->slabel, next) { 
+		seq_printf(m, "%ld:", t->content);
+	}
+
+	seq_printf(m, "\nIntegrity label: ");
+	list_for_each_entry_rcu(t, &tsp->ilabel, next) {
+		seq_printf(m, "%ld:", t->content);
+	}
+
+	seq_printf(m, "\nOwnerships: ");
+	list_for_each_entry_rcu(t, &tsp->olabel, next) {
+		seq_printf(m, "%ld:", t->content);
+	}
+	seq_printf(m, "\nConfined: %d", tsp->confined);
+	seq_printf(m, "\n");
+	
+	return 0;
+}
+
+/*
+* Modified by Yuqiong
+*/
+static int proc_difc_open(struct inode *inode, struct file *file) {
+	struct difc_task *tsp = NULL;
+	struct task_struct *task;
+	struct seq_file *seq;
+	int ret = -EINVAL;
+
+	if (!(file->f_flags & O_WRONLY))
+		return -EACCES;
+
+	/*
+	* TODO
+	* For now, assume a process can drop ownerships of others
+	* In future, a process can drop ownerships owned by itself
+	*/
+
+	task = get_proc_task(inode);
+	if (task)
+		tsp = task->cred->security;
+	if (!tsp)
+		return ret;
+
+	ret = seq_open(file, NULL);
+	if (ret != 0)
+		return ret;
+
+	seq = file->private_data;
+	seq->private = tsp;
+	
+	return 0;	
+}
+
+static ssize_t proc_task_confine_write(struct file *file, const char __user *buf,
+					size_t size, loff_t *ppos) {
+	int ret = -EINVAL;
+	struct seq_file *seq = file->private_data;
+	struct task_difc *tsp = seq->private;
+
+	ret = difc_confine_task(file, buf, size, ppos, tsp);
+	return ret;
+}
+
+static ssize_t proc_ownership_add_write(struct file *file, const char __user *buf,
+					size_t size, loff_t *ppos) {
+	struct seq_file *seq = file->private_data;
+	struct task_difc *tsp = seq->private;
+	int ret = -EINVAL;
+
+	// ops = 0, add ownership
+	ret = difc_label_change(file, buf, size, ppos, tsp, OWNERSHIP_ADD);
+	return ret;
+}
+
+static ssize_t proc_ownership_drop_write(struct file *file, const char __user *buf, 
+					size_t size, loff_t *ppos) {
+	struct seq_file *seq = file->private_data;
+	struct task_difc *tsp = seq->private;
+	int ret = -EINVAL;
+	
+	// ops = 1, drop ownership
+	ret = difc_label_change(file, buf, size, ppos, tsp, OWNERSHIP_DROP);
+	return ret;
+}
+
+static ssize_t proc_secrecy_label_write(struct file *file, const char __user *buf,
+					size_t size, loff_t *ppos) {
+	struct seq_file *seq = file->private_data;
+	struct task_difc *tsp = seq->private;
+	int ret = -EINVAL;
+	
+	// ops = 2, change secrecy label
+	ret = difc_label_change(file, buf, size, ppos, tsp, SECRECY_LABEL);
+	return ret;
+}
+
+static ssize_t proc_integrity_label_write(struct file *file, const char __user *buf,
+					size_t size, loff_t *ppos) {
+	struct seq_file *seq = file->private_data;
+	struct task_difc *tsp = seq->private;
+	int ret = -EINVAL;	
+
+	// ops = 3, change integrity label
+	ret = difc_label_change(file, buf, size, ppos, tsp, INTEGRITY_LABEL);
+	return ret;
+}
+
+static int proc_difc_release(struct inode *inode, struct file *file) {
+	int ret = -EINVAL;
+	ret = seq_release(inode, file);
+	return ret;
+}
+
+/*
+* Added by Yuqiong to support DIFC labels and ownerships
+*/
+
+static const struct file_operations proc_task_confine_operations = {
+	.open		= proc_difc_open,
+	.write		= proc_task_confine_write,
+	.llseek		= generic_file_llseek,
+	.release	= proc_difc_release,
+};
+
+static const struct file_operations proc_ownership_drop_operations = {
+	.open		= proc_difc_open,
+	.write		= proc_ownership_drop_write,
+	.llseek		= generic_file_llseek,
+	.release	= proc_difc_release,	
+};
+
+
+
+static const struct file_operations proc_ownership_add_operations = {
+	.open		= proc_difc_open,
+	.write		= proc_ownership_add_write,
+	.llseek		= generic_file_llseek,
+	.release	= proc_difc_release,	
+};
+
+static const struct file_operations proc_secrecy_label_operations = {
+	.open		= proc_difc_open,
+	.write		= proc_secrecy_label_write,
+	.llseek		= generic_file_llseek,
+	.release	= proc_difc_release,	
+};
+
+static const struct file_operations proc_integrity_label_operations = {
+	.open		= proc_difc_open,
+	.write		= proc_integrity_label_write,
+	.llseek		= generic_file_llseek,
+	.release	= proc_difc_release,	
+};
+
 static const struct file_operations proc_uid_map_operations = {
 	.open		= proc_uid_map_open,
 	.write		= proc_uid_map_write,
@@ -2831,6 +3009,17 @@ static const struct pid_entry tgid_base_stuff[] = {
 #endif
 #ifdef CONFIG_CHECKPOINT_RESTORE
 	REG("timers",	  S_IRUGO, proc_timers_operations),
+#endif
+#ifdef CONFIG_SECURITY_DIFC
+	/*
+	* SYQ: To support owneship and label operations
+	*/
+	REG("add_owner", S_IWUSR, proc_ownership_add_operations),
+	REG("drop_owner", S_IWUSR, proc_ownership_drop_operations),
+	REG("set_secrecy", S_IWUSR, proc_secrecy_label_operations),
+	REG("set_integrity", S_IWUSR, proc_integrity_label_operations),
+	ONE("labels", S_IRUGO, proc_show_labels),
+	REG("confined", S_IWUSR, proc_task_confine_operations),
 #endif
 };
 

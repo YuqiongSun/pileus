@@ -123,7 +123,7 @@ source security/smack/Kconfig
 source security/tomoyo/Kconfig
 source security/apparmor/Kconfig
 source security/yama/Kconfig
-
+source security/difc/Kconfig
 source security/integrity/Kconfig
 
 choice
@@ -133,6 +133,7 @@ choice
 	default DEFAULT_SECURITY_TOMOYO if SECURITY_TOMOYO
 	default DEFAULT_SECURITY_APPARMOR if SECURITY_APPARMOR
 	default DEFAULT_SECURITY_YAMA if SECURITY_YAMA
+	default DEFAULT_SECURITY_DIFC if SECURITY_DIFC
 	default DEFAULT_SECURITY_DAC
 
 	help
@@ -153,6 +154,9 @@ choice
 
 	config DEFAULT_SECURITY_YAMA
 		bool "Yama" if SECURITY_YAMA=y
+	
+	config DEFAULT_SECURITY_DIFC
+		bool "DIFC" if SECURITY_DIFC=y
 
 	config DEFAULT_SECURITY_DAC
 		bool "Unix Discretionary Access Controls"
@@ -166,6 +170,7 @@ config DEFAULT_SECURITY
 	default "tomoyo" if DEFAULT_SECURITY_TOMOYO
 	default "apparmor" if DEFAULT_SECURITY_APPARMOR
 	default "yama" if DEFAULT_SECURITY_YAMA
+	default "difc" if DEFAULT_SECURITY_DIFC
 	default "" if DEFAULT_SECURITY_DAC
 
 endmenu

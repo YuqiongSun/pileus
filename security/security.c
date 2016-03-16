@@ -378,7 +378,6 @@ int security_inode_init_security(struct inode *inode, struct inode *dir,
 
 	if (unlikely(IS_PRIVATE(inode)))
 		return 0;
-
 	if (!initxattrs)
 		return call_int_hook(inode_init_security, -EOPNOTSUPP, inode,
 				     dir, qstr, NULL, NULL, NULL);
