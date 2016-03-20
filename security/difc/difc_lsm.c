@@ -292,6 +292,62 @@ static void difc_inode_post_setxattr(struct dentry *dentry, const char *name,
 	return;
 }
 
+static int difc_inode_unlink(struct inode *dir, struct dentry *dentry) {
+	int rc = 0;
+	struct task_difc *tsp = current_security();
+	struct super_block *sbp = dentry->d_inode->i_sb;
+	struct inode_difc *isp = dentry->d_inode->i_security;
+	struct tag *t;
+
+	if (!tsp->confined)
+		return rc;
+
+	if ((dir->i_mode & S_ISVTX) == 0)
+		return rc;
+
+	switch (sbp->s_magic) {
+		case PIPEFS_MAGIC:
+		case SOCKFS_MAGIC:
+		case CGROUP_SUPER_MAGIC:
+		case DEVPTS_SUPER_MAGIC:
+		case PROC_SUPER_MAGIC:
+		case TMPFS_MAGIC:
+		case SYSFS_MAGIC:
+		case RAMFS_MAGIC:
+		case DEBUGFS_MAGIC:
+			return rc;
+		default:
+			/* For now, only check on the rest cases */
+			break;
+	}
+
+	/* Only allow when current can integrity write the dentry inode */
+	list_for_each_entry_rcu(t, &isp->ilabel, next)
+		if (t->content == 0)
+			return rc;
+
+	rc = is_label_subset(&isp->ilabel, &tsp->olabel, &tsp->ilabel);
+	if (rc < 0) {
+		printk(KERN_ALERT "SYQ: cannot delete file (%s)\n", dentry->d_name.name);
+		rc = -EPERM;
+		goto out;
+	}
+	
+out:
+	/* For debugging, always return 0 */
+	rc = 0;
+	return rc;
+}
+
+static int difc_inode_rmdir(struct inode *dir, struct dentry *dentry) {
+	/* 
+	* Currently, we assume files under the directory would have the same label
+	* if a dir is a/b/c and labels are a(1), b(1;2), c(1;2;3)
+	* Impossible, since otherwise the file cannot be read due to parent directories have less integrity
+	*/
+	return difc_inode_unlink(dir, dentry);
+}
+
 static int difc_inode_permission(struct inode *inode, int mask) {
 	int rc = 0;
 	struct task_difc *tsp = current_security();
@@ -341,24 +397,29 @@ static int difc_inode_permission(struct inode *inode, int mask) {
 		
 		if (top ==0 && down == 0)
 			goto out;
-		/*
-		*  Integrity: Ip <= Iq + Op
-		*/
-		rc = is_label_subset(&tsp->ilabel, &tsp->olabel, &isp->ilabel);
-		if (rc < 0) {
-			printk(KERN_ALERT "SYQ: integrity cannot read (0x%08x: %ld)\n", sbp->s_magic, inode->i_ino);
-			rc = -EACCES;
-			goto out;
-		}
 
-		/*
-		*  Secrecy: Sq <= Sp + Op
-		*/
-		rc = is_label_subset(&isp->slabel, &tsp->olabel, &tsp->slabel);
-		if (rc < 0) {
-			printk(KERN_ALERT "SYQ: secrecy cannot read (0x%08x: %ld)\n", sbp->s_magic, inode->i_ino);
-			rc = -EACCES;
-			goto out;
+		if (top != 0) {
+			/*
+			*  Integrity: Ip <= Iq + Op
+			*/
+			rc = is_label_subset(&tsp->ilabel, &tsp->olabel, &isp->ilabel);
+			if (rc < 0) {
+				printk(KERN_ALERT "SYQ: integrity cannot read (0x%08x: %ld)\n", sbp->s_magic, inode->i_ino);
+				rc = -EACCES;
+				goto out;
+			}
+		}
+	
+		if (down != 0) {
+			/*
+			*  Secrecy: Sq <= Sp + Op
+			*/
+			rc = is_label_subset(&isp->slabel, &tsp->olabel, &tsp->slabel);
+			if (rc < 0 && down != 0) {
+				printk(KERN_ALERT "SYQ: secrecy cannot read (0x%08x: %ld)\n", sbp->s_magic, inode->i_ino);
+				rc = -EACCES;
+				goto out;
+			}
 		}
 	} 
 	
@@ -378,25 +439,29 @@ static int difc_inode_permission(struct inode *inode, int mask) {
 		
 		if (top ==0 && down == 0)
 			goto out;
-		
 
-		/*
-		*  Integrity: Iq <= Ip + Op
-		*/
-		rc = is_label_subset(&isp->ilabel, &tsp->olabel, &tsp->ilabel);
-		if (rc < 0) {
-			printk(KERN_ALERT "SYQ: integrity cannot write (0x%08x: %ld)\n", sbp->s_magic, inode->i_ino);
-			rc = -EACCES;
-			goto out;
+		if (top != 0) {
+			/*
+			*  Integrity: Iq <= Ip + Op
+			*/
+			rc = is_label_subset(&isp->ilabel, &tsp->olabel, &tsp->ilabel);
+			if (rc < 0) {
+				printk(KERN_ALERT "SYQ: integrity cannot write (0x%08x: %ld)\n", sbp->s_magic, inode->i_ino);
+				rc = -EACCES;
+				goto out;
+			}
 		}
-		/*
-		*  Secrecy: Sp <= Sq + Op
-		*/
-		rc = is_label_subset(&tsp->slabel, &tsp->olabel, &isp->slabel);
-		if (rc < 0) {
-			printk(KERN_ALERT "SYQ: secrecy cannot write (0x%08x: %ld)\n", sbp->s_magic, inode->i_ino);
-			rc = -EACCES;
-			goto out;
+
+		if (down != 0) {
+			/*
+			*  Secrecy: Sp <= Sq + Op
+			*/
+			rc = is_label_subset(&tsp->slabel, &tsp->olabel, &isp->slabel);
+			if (rc < 0) {
+				printk(KERN_ALERT "SYQ: secrecy cannot write (0x%08x: %ld)\n", sbp->s_magic, inode->i_ino);
+				rc = -EACCES;
+				goto out;
+			}
 		}
 	}
 
@@ -476,6 +541,8 @@ static struct security_hook_list difc_hooks[] = {
 	LSM_HOOK_INIT(inode_setsecurity, difc_inode_setsecurity),
 	LSM_HOOK_INIT(inode_listsecurity, difc_inode_listsecurity),
 	LSM_HOOK_INIT(inode_permission, difc_inode_permission),
+	LSM_HOOK_INIT(inode_unlink, difc_inode_unlink),
+	LSM_HOOK_INIT(inode_rmdir, difc_inode_rmdir),
 	
 	LSM_HOOK_INIT(d_instantiate, difc_d_instantiate),
 
