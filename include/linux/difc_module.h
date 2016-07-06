@@ -23,6 +23,11 @@ struct inode_difc {
 	struct list_head ilabel;
 };
 
+struct socket_difc {
+	struct inode_difc *isp;
+	struct inode_difc *peer_isp;
+};
+
 extern size_t difc_label_change(struct file *file, const char __user *buf, 
 			size_t size, loff_t *ppos, struct task_difc *tsp, enum label_types ops);
 

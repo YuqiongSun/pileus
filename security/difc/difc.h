@@ -8,7 +8,7 @@
 #include <linux/spinlock.h>
 #include <linux/sched.h>
 
-#define MAX_LABEL_SIZE 50
+#define MAX_LABEL_SIZE 300
 
 extern struct kmem_cache *tag_struct;
 

@@ -61,6 +61,10 @@ out:
 	return -ENOMEM;
 }
 
+static struct inode_difc *inode_security_novalidate(struct inode *inode) {
+	return inode->i_security;
+}
+
 static struct inode_difc *new_inode_difc(void) {
 	struct inode_difc *isp;
 	struct task_difc *tsp;
@@ -191,10 +195,17 @@ static int difc_inode_init_security(struct inode *inode, struct inode *dir,
 	struct inode_difc *isp = inode->i_security;
 	int rc, llen;
 	char *labels;
+	struct task_difc *tsp = current_security();
 
+	/* 
 	if (!isp) {
 		printk(KERN_ALERT "SYQ: inode->i_security is null (%s)\n", __func__);
 		return 0;
+	}
+	*/
+
+	if (tsp->confined) {
+		printk(KERN_ALERT "SYQ: new inode is created %ld\n", inode->i_ino);
 	}
 
 	if (name)
@@ -523,6 +534,108 @@ static void difc_d_instantiate(struct dentry *opt_dentry, struct inode *inode) {
 	return;
 }
 
+static int difc_sk_alloc_security(struct sock *sk, int family, gfp_t priority) {
+	struct socket_difc *ssp;
+
+	ssp = kzalloc(sizeof(struct socket_difc), priority);
+	if (!ssp)
+		return -ENOMEM;
+
+	// Set in difc_socket_post_create()?
+	ssp->isp = NULL;
+	ssp->peer_isp = NULL;
+	sk->sk_security =  ssp;
+
+	return 0;
+}
+
+static void difc_sk_free_security(struct sock *sk) {
+	struct socket_difc *ssp = sk->sk_security;
+	sk->sk_security = NULL;
+
+	if (!ssp)
+		kfree(ssp);
+}
+
+static void difc_sk_clone_security(const struct sock *sk, struct sock *newsk) {
+	struct socket_difc *ssp = sk->sk_security;
+	struct socket_difc *newssp = newsk->sk_security;
+
+	newssp->isp = ssp->isp;
+	newssp->peer_isp = ssp->peer_isp;
+}
+
+static int difc_socket_create(int family, int type, int protocol, int kern) {
+	/*
+	* Seems like no need to set up
+	*/
+	return 0;
+}
+
+
+static int difc_socket_getpeersec_stream(struct socket *sock, char __user *optval,
+					int __user *optlen, unsigned len) {
+	struct socket_difc *ssp = sock->sk->sk_security;
+	struct inode_difc *peer_isp;
+	char *buffer;
+	int label_len;
+	int rc = 0;
+
+	if (!ssp) {
+		printk(KERN_ALERT "SYQ: socket security is null\n");
+		return -ENOPROTOOPT;
+	}
+	
+	peer_isp = ssp->peer_isp;
+	if (!peer_isp) {
+		printk(KERN_ALERT "SYQ: socket peer isp is null\n");
+		return -ENOPROTOOPT;
+	}
+
+	rc = security_to_labels(&peer_isp->slabel, &peer_isp->ilabel, &buffer, &label_len);
+	if (rc < 0)
+		return rc;
+
+	if (label_len > len) {
+		rc = -ERANGE;
+		goto out_len;
+	}
+
+	if (copy_to_user(optval, buffer, label_len))
+		rc = -EFAULT;
+
+out_len:
+	if (put_user(label_len, optlen))
+		rc = -EFAULT;
+	kfree(buffer);
+	return rc;
+}
+
+static int difc_socket_unix_stream_connect(struct sock *sock, struct sock *other,
+						struct sock *newsk){
+	struct socket_difc *ssp_sock = sock->sk_security;
+	struct socket_difc *ssp_other = other->sk_security;
+	struct socket_difc *ssp_newsk = newsk->sk_security;
+
+	ssp_newsk->peer_isp = ssp_sock->isp;
+	ssp_sock->peer_isp = ssp_newsk->isp;
+	
+	return 0;
+}
+
+static int difc_socket_post_create(struct socket *sock, int family,
+				int type, int protocol, int kern) {
+	struct inode_difc *isp = inode_security_novalidate(SOCK_INODE(sock));
+	struct socket_difc *ssp;
+
+	if (sock->sk) {
+		ssp = sock->sk->sk_security;
+		ssp->isp = isp;
+	}	
+
+	return 0;
+}
+
 static struct security_hook_list difc_hooks[] = {
 	LSM_HOOK_INIT(cred_alloc_blank, difc_cred_alloc_blank),
 	LSM_HOOK_INIT(cred_free, difc_cred_free),
@@ -545,6 +658,15 @@ static struct security_hook_list difc_hooks[] = {
 	LSM_HOOK_INIT(inode_rmdir, difc_inode_rmdir),
 	
 	LSM_HOOK_INIT(d_instantiate, difc_d_instantiate),
+
+
+	LSM_HOOK_INIT(sk_alloc_security, difc_sk_alloc_security),
+	LSM_HOOK_INIT(sk_free_security, difc_sk_free_security),
+	LSM_HOOK_INIT(sk_clone_security, difc_sk_clone_security),
+	LSM_HOOK_INIT(socket_getpeersec_stream, difc_socket_getpeersec_stream),
+	LSM_HOOK_INIT(socket_post_create, difc_socket_post_create),
+	LSM_HOOK_INIT(socket_create, difc_socket_create),
+	LSM_HOOK_INIT(unix_stream_connect, difc_socket_unix_stream_connect),
 
 	LSM_HOOK_INIT(bprm_check_security, difc_bprm_check_security),
 };

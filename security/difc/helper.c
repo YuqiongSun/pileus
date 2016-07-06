@@ -31,16 +31,21 @@ int is_label_subset(struct list_head *p, struct list_head *o, struct list_head *
 				break;
 			}
 		}
+		if (present)
+			continue;
 		list_for_each_entry_rcu(to, o, next) {
 			if (to->content == tp->content) {
 				present = true;
 				break;
 			}
 		}
-		if (present)
+		if (present) {
 			continue;
-		else
+		}
+		else {
+			printk("SYQ: tag %d error\n", tp->content);
 			return -EACCES;
+		}
 	}
 	return rc;
 }
